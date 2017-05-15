@@ -4,80 +4,116 @@ import (
 	"os"
 	"fmt"
 	"io/ioutil"
-	"encoding/json"
 	"log"
 	"time"
+	"net/http"
+	"flag"
+	"github.com/gorilla/websocket"
 )
 
-type World struct {
-	Width  int
-	Height int
-	Matrix [][]int
+const (
+	// Time allowed to write the file to the client.
+	writeWait = 10 * time.Second
+
+	// Time allowed to read the next pong message from the client.
+	pongWait = 60 * time.Second
+
+	// Send pings to client with this period. Must be less than pongWait.
+	pingPeriod = (pongWait * 9) / 10
+
+	// Poll file for changes with this period.
+	filePeriod = 1 * time.Second
+
+	// Time to wait before force close on connection.
+	closeGracePeriod = 10 * time.Second
+)
+
+var (
+	addr      = flag.String("addr", ":8080", "http service address")
+	world       World
+)
+
+
+func pumpStdout(ws *websocket.Conn, done chan struct{}) {
+	defer func() {
+	}()
+
+	for {
+		p, _, err := world.RunGeneration()
+		if err != nil {
+			ws.Close()
+			break
+		}
+		ws.SetWriteDeadline(time.Now().Add(writeWait))
+		if err := ws.WriteMessage(websocket.TextMessage, p); err != nil {
+			ws.Close()
+			break
+		}
+		time.Sleep(filePeriod)
+	}
+
+	close(done)
+
+	ws.SetWriteDeadline(time.Now().Add(writeWait))
+	ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+	time.Sleep(closeGracePeriod)
+	ws.Close()
 }
 
-func (w World) RunGeneration() {
-	tmp := make([][]int, w.Width)
-	for i := range w.Matrix {
-		tmp[i] = make([]int, w.Height)
-		for j := range w.Matrix[i] {
-			num_neighbors := w.calculateNeighbors(i,j)
-			if w.Matrix[i][j] == 0 { // dead Case
-				if num_neighbors == 3 {
-					tmp[i][j] = 1
-				} else {
-					tmp[i][j] = 0
-				}
-			} else { // live case
-				if num_neighbors < 2 {
-					tmp[i][j] = 0 //Dies underpopulation
-				} else if num_neighbors >=2 && num_neighbors <= 3 {
-					tmp[i][j] = 1  // Lives to see another day.
-				} else {
-					tmp[i][j] = 0 // Dies overpopulation
-				}
+func ping(ws *websocket.Conn, done chan struct{}) {
+	ticker := time.NewTicker(pingPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := ws.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(writeWait)); err != nil {
+				log.Println("ping:", err)
 			}
-		}
-	}
-
-	// Copy tmp world over to master.
-	for i := range w.Matrix {
-		for j := range w.Matrix[i] {
-			w.Matrix[i][j] = tmp[i][j]
+		case <-done:
+			return
 		}
 	}
 }
 
-func (w World) calculateNeighbors(x int, y int) (int) {
-	drow := [...]int{ 0,  1, 1, 1, 0, -1, -1, -1}
-	dcol := [...]int{-1, -1, 0, 1, 1,  1,  0, -1}
-	var cnt int
-	for k := 0; k < 8; k++ {
-		if x + drow[k] < 0 || y + dcol[k] < 0 || x + drow[k] >= w.Width || y + dcol[k] >= w.Height {
-			continue
-		}
-		if w.Matrix[x+drow[k]][y+dcol[k]] == 1 {
-			cnt++
-		}
-
-	}
-	return cnt
+func internalError(ws *websocket.Conn, msg string, err error) {
+	log.Println(msg, err)
+	ws.WriteMessage(websocket.TextMessage, []byte("Internal server error."))
 }
 
-func (w World) Print() {
-	fmt.Println("")
-	for i := range w.Matrix {
-		for j := range w.Matrix[i] {
-			if w.Matrix[i][j] == 1 {
-				fmt.Print(" X ")
-			} else {
-				fmt.Print("   ")
-			}
+var upgrader = websocket.Upgrader{}
 
-		}
-		fmt.Println("|")
+func serveWs(w http.ResponseWriter, r *http.Request) {
+
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println("upgrade:", err)
+		return
 	}
-	fmt.Println("")
+	defer ws.Close()
 
+	stdoutDone := make(chan struct{})
+	go pumpStdout(ws, stdoutDone)
+	go ping(ws, stdoutDone)
+
+	select {
+	case <-stdoutDone:
+	case <-time.After(time.Second):
+		<-stdoutDone
+	}
+}
+
+func serveHome(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.Error(w, "Not found", 404)
+		return
+	}
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	log.Println("serveHome")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeFile(w, r, "home.html")
 }
 
 func main() {
@@ -98,19 +134,15 @@ func main() {
 
 	log.Println(string(data))
 
-	var world World
-
-	if err := json.Unmarshal(data, &world); err != nil {
-		fmt.Println("I failed at unmarhsalling the json ", err)
-	}
+	world.readFromJson(data)
 
 	log.Println("Width = ", world.Width)
 	log.Println("Height = ", world.Height)
 
-
-	for {
-		world.Print()
-		world.RunGeneration()
-		time.Sleep(100 * time.Millisecond)
+	http.HandleFunc("/", serveHome)
+	http.HandleFunc("/ws", serveWs)
+	if err := http.ListenAndServe(*addr, nil); err != nil {
+		log.Fatal(err)
 	}
 }
+

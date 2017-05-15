@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Conways Game of Life</title>
+</head>
+<body>
+<script type="text/javascript">
+window.onload = function () {
+    var conn;
+    var map = document.getElementById("map");
+    var log = document.getElementById("log");
+
+    function updateMap(item) {
+        mapdata = JSON.parse(item.innerText);
+        m = mapdata["Matrix"];
+        map.innerHTML = ""
+        for (var i =0; i<m.length; i++) {
+            for (var j = 0; j<m[i].length; j++) {
+                if (m[i][j] == 1) {
+                    map.innerHTML += "X\xa0"
+                } else {
+                    map.innerHTML += "\xa0\xa0"
+                }
+            }
+            map.innerHTML += "<br>"
+        }
+
+    }
+    function appendLog(item) {
+        log.innerHTML = item.innerText;
+    }
+
+    if (window["WebSocket"]) {
+        conn = new WebSocket("ws://" + document.location.host + "/ws");
+        conn.onclose = function (evt) {
+            var item = document.createElement("div");
+            item.innerHTML = "<b>Connection closed.</b>";
+            appendLog(item);
+        };
+        conn.onmessage = function (evt) {
+            var messages = evt.data.split('\n');
+            for (var i = 0; i < messages.length; i++) {
+                var item = document.createElement("div");
+                item.innerText = messages[i];
+                updateMap(item);
+                appendLog(item);
+            }
+        };
+    } else {
+        var item = document.createElement("div");
+        item.innerHTML = "<b>Your browser does not support WebSockets.</b>";
+        appendLog(item);
+    }
+};
+</script>
+<style type="text/css">
+html {
+    overflow: hidden;
+}
+
+body {
+    overflow: hidden;
+    padding: 0;
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: gray;
+}
+
+#log {
+    background: cornflowerblue;
+    margin: 0;
+    padding: 0.5em 0.5em 0.5em 0.5em;
+    position: absolute;
+    top: 40em;
+    left: 0.5em;
+    right: 0.5em;
+    bottom: 3em;
+    font-family: monospace;
+}
+
+#map pre {
+  margin: 0;
+}
+#map {
+    background: white;
+    margin: 0;
+    padding: 0.5em 0.5em 0.5em 0.5em;
+    position: absolute;
+    top: 0.5em;
+    left: 0.5em;
+    right: 0.5em;
+    bottom: 3em;
+    overflow: auto;
+    font-family: monospace;
+}
+
+#log pre {
+  margin: 0;
+}
+</style>
+<div id="map"></div>
+<div id="log"></div>
+</body>
+</html>
